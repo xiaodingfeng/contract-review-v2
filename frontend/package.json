@@ -1,0 +1,28 @@
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@fingerprintjs/fingerprintjs": "^4.4.1",
+    "@onlyoffice/document-editor-vue": "^1.6.1",
+    "axios": "^1.7.2",
+    "element-plus": "^2.10.1",
+    "marked": "^18.0.0",
+    "socket.io-client": "^4.8.3",
+    "uuid": "^13.0.0",
+    "vue": "^3.2.13",
+    "vue-router": "^4.0.3"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.4",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.3",
+    "vite": "^6.4.2"
+  }
+}
