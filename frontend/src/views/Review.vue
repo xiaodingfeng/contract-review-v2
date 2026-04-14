@@ -197,6 +197,9 @@
                     </div>
                 </div>
                 <div>
+                    <button @click="exportReport('pdf')" class="mr-3 text-sm font-medium text-primary hover:text-primary-dark">导出PDF</button>
+                    <button @click="exportReport('word')" class="mr-3 text-sm font-medium text-primary hover:text-primary-dark">导出Word</button>
+                    <button @click="downloadPdfAnnotations" class="mr-3 text-sm font-medium text-primary hover:text-primary-dark">PDF批注</button>
                     <template v-if="cameFromHistory">
                         <button @click="goBackToUpload" class="text-sm font-medium text-primary hover:text-primary-dark">重新上传</button>
                         <button @click="goBackSmart" class="ml-4 text-sm font-medium text-primary hover:text-primary-dark">返回历史</button>
@@ -303,6 +306,19 @@
                 </div>
                 <!-- Modification Suggestions -->
                 <div v-if="activeAiTab === 'suggestions'">
+                    <div v-if="reviewData.modification_suggestions && reviewData.modification_suggestions.length > 0" class="mb-3 flex items-center justify-between gap-2">
+                        <el-checkbox-group v-model="selectedSuggestionIndexes" class="flex flex-wrap gap-2">
+                            <el-checkbox
+                                v-for="(item, index) in reviewData.modification_suggestions"
+                                :key="'select-ms-' + index"
+                                :label="index"
+                                border
+                            >{{ index + 1 }}</el-checkbox>
+                        </el-checkbox-group>
+                        <button @click="applySelectedSuggestions" :disabled="batchApplying || selectedSuggestionIndexes.length === 0" class="px-3 py-1.5 text-xs font-medium text-white bg-primary rounded hover:bg-primary-dark disabled:opacity-50">
+                            {{ batchApplying ? '批量采纳中...' : '一键采纳所选' }}
+                        </button>
+                    </div>
                     <div v-if="reviewData.modification_suggestions && reviewData.modification_suggestions.length > 0" class="space-y-4">
                         <div v-for="(item, index) in reviewData.modification_suggestions" :key="'ms-' + index" class="p-4 bg-bg-subtle rounded-md border border-border-color transition-all hover:shadow-md">
                             <div class="flex justify-between items-start">
@@ -393,6 +409,22 @@
                 <!-- Focused Review -->
                 <div v-if="activeAiTab === 'workspace'">
                     <div class="space-y-4">
+                        <div class="p-4 bg-white rounded-md border border-border-color">
+                            <div class="flex items-center justify-between">
+                                <h4 class="font-semibold text-text-dark">合同版本对比</h4>
+                                <button @click="loadLatestDiff" :disabled="diffLoading" class="px-3 py-1.5 text-xs font-medium text-primary bg-white border border-primary rounded hover:bg-primary-light">
+                                    {{ diffLoading ? '加载中...' : '查看最近变更' }}
+                                </button>
+                            </div>
+                            <div v-if="diffItems.length" class="mt-3 p-3 bg-bg-subtle rounded text-xs leading-6 max-h-56 overflow-y-auto whitespace-pre-wrap">
+                                <template v-for="(part, index) in diffItems" :key="'diff-' + index">
+                                    <span v-if="part.type === 'insert'" class="diff-insert">{{ part.text }}</span>
+                                    <span v-else-if="part.type === 'delete'" class="diff-delete">{{ part.text }}</span>
+                                    <span v-else>{{ part.text }}</span>
+                                </template>
+                            </div>
+                            <p v-else class="mt-2 text-xs text-text-light">采纳修改后会自动保存原始快照，可在这里查看新增和删除文本。</p>
+                        </div>
                         <div class="p-4 bg-bg-subtle rounded-md border border-border-color">
                             <div class="flex justify-between items-center">
                                 <h4 class="font-semibold text-text-dark">选中文本专项审查</h4>
@@ -497,15 +529,38 @@
 
     <!-- Loading Overlay - Moved inside the single root element -->
     <div v-if="loading && activeStep < 2" class="fixed inset-0 bg-white/70 backdrop-blur-sm flex items-center justify-center z-50">
-        <div class="flex flex-col items-center">
+        <div class="flex flex-col items-center max-w-md bg-white border border-border-color rounded-md p-4 shadow-sm">
             <p class="text-lg font-semibold text-text-dark">{{ loadingMessage }}</p>
+            <div v-if="analysisProgress.length" class="analysis-progress mt-4 w-full">
+                <div
+                    v-for="(item, index) in visibleAnalysisProgress"
+                    :key="'progress-' + index"
+                    class="analysis-progress__item"
+                    :class="[
+                        `analysis-progress__item--${progressStatusClass(item.status)}`,
+                        index === visibleAnalysisProgress.length - 1 ? 'analysis-progress__item--current' : ''
+                    ]"
+                >
+                    <div class="analysis-progress__marker">
+                        <span v-if="item.status === 'completed'">✓</span>
+                        <span v-else-if="item.status === 'failed'">!</span>
+                    </div>
+                    <div class="analysis-progress__content">
+                        <div class="analysis-progress__title">
+                            <span>{{ progressStepLabel(item.step) }}</span>
+                            <span class="analysis-progress__status">{{ progressStatusLabel(item.status) }}</span>
+                        </div>
+                        <p v-if="item.message" class="analysis-progress__message">{{ item.message }}</p>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
   </div>
 </template>
 
 <script>
-import { ref, reactive, watch, toRaw, onMounted, nextTick, onUnmounted } from 'vue';
+import { ref, reactive, watch, toRaw, onMounted, nextTick, onUnmounted, computed } from 'vue';
 import { useRoute, useRouter, onBeforeRouteUpdate } from 'vue-router';
 import { ElMessage, ElUpload, ElSelect, ElOption, ElCheckboxGroup, ElCheckbox, ElInput, ElAutocomplete, ElSwitch, ElTooltip } from 'element-plus';
 import api from '../api';
@@ -540,6 +595,36 @@ export default {
     const hasPendingEditorChanges = ref(false);
     const selectedSuggestionPreview = ref(null);
     const adoptedHighlights = ref({});
+    const analysisProgress = ref([]);
+    const selectedSuggestionIndexes = ref([]);
+    const batchApplying = ref(false);
+    const diffItems = ref([]);
+    const diffLoading = ref(false);
+    const visibleAnalysisProgress = computed(() => analysisProgress.value.slice(-6));
+    const progressStepLabels = {
+      pre_analysis: '合同预分析',
+      extract_text: '提取合同正文',
+      knowledge_search: '检索法条与案例',
+      company_search: '核验合同主体',
+      llm_review: '生成审查结论',
+      finalize: '保存审查结果',
+      failed: '分析失败',
+    };
+    const progressStatusLabels = {
+      running: '进行中',
+      completed: '已完成',
+      failed: '失败',
+      reviewed: '已审查',
+      pre_analyzed: '已预分析',
+      processing: '处理中',
+    };
+    const progressStepLabel = (step) => progressStepLabels[step] || step || '处理中';
+    const progressStatusLabel = (status) => progressStatusLabels[status] || status || '处理中';
+    const progressStatusClass = (status) => {
+      if (status === 'completed' || status === 'reviewed' || status === 'pre_analyzed') return 'completed';
+      if (status === 'failed') return 'failed';
+      return 'running';
+    };
     const focusedReviewText = ref('');
     const focusedReviewQuestion = ref('');
     const focusedReviewResult = ref(null);
@@ -581,6 +666,14 @@ export default {
             });
             Object.assign(reviewData, data.results || data);
             if (data.perspective) perspective.value = data.perspective;
+        });
+
+        socket.value.on('analysis-progress', (data) => {
+            analysisProgress.value.push(data);
+            if (data.partialResult) {
+                Object.assign(reviewData, data.partialResult);
+            }
+            loadingMessage.value = data.message || loadingMessage.value;
         });
     };
 
@@ -1549,6 +1642,79 @@ export default {
         }, item);
     };
 
+    const downloadBlob = (blob, filename) => {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+    };
+
+    const applySelectedSuggestions = async () => {
+        const indexes = selectedSuggestionIndexes.value;
+        if (!indexes.length) {
+            ElMessage.warning('请选择要批量采纳的修改建议。');
+            return;
+        }
+        batchApplying.value = true;
+        try {
+            const suggestions = indexes.map((index) => {
+                const item = reviewData.modification_suggestions[index];
+                return {
+                    originalText: suggestionOriginal(item),
+                    suggestedText: suggestionText(item),
+                    originalCandidates: buildSuggestionCandidates(suggestionOriginal(item), item),
+                };
+            });
+            const response = await api.batchReplaceContractText(contract.id, { suggestions });
+            if (response.data.editorConfig) contract.editorConfig = response.data.editorConfig;
+            indexes.forEach((index) => {
+                if (reviewData.modification_suggestions[index]) reviewData.modification_suggestions[index].adopted = true;
+            });
+            ElMessage.success(`批量采纳完成，成功替换 ${response.data.totalReplacements || 0} 处。`);
+            await loadLatestDiff();
+        } catch (error) {
+            ElMessage.error(error.response?.data?.error || '批量采纳失败。');
+        } finally {
+            batchApplying.value = false;
+        }
+    };
+
+    const loadLatestDiff = async () => {
+        if (!contract.id) return;
+        diffLoading.value = true;
+        try {
+            const response = await api.getContractDiff(contract.id);
+            diffItems.value = response.data.diff || [];
+            activeAiTab.value = 'workspace';
+        } catch (error) {
+            ElMessage.info(error.response?.data?.error || '暂无可对比的合同版本。');
+        } finally {
+            diffLoading.value = false;
+        }
+    };
+
+    const exportReport = async (format = 'html') => {
+        try {
+            const response = await api.exportReviewReport(contract.id, format);
+            downloadBlob(response.data, `合同审查报告.${format === 'word' ? 'doc' : format}`);
+        } catch (error) {
+            ElMessage.error(error.response?.data?.error || '导出审查报告失败。');
+        }
+    };
+
+    const downloadPdfAnnotations = async () => {
+        try {
+            const response = await api.downloadPdfAnnotations(contract.id);
+            downloadBlob(response.data, 'PDF批注意见.txt');
+        } catch (error) {
+            ElMessage.error(error.response?.data?.error || '导出 PDF 批注意见失败。');
+        }
+    };
+
     return {
       activeStep,
       loading,
@@ -1604,7 +1770,20 @@ export default {
       applyFocusedSuggestion,
       locateText,
       addDocComment,
-      adoptSuggestion
+      adoptSuggestion,
+      analysisProgress,
+      visibleAnalysisProgress,
+      progressStepLabel,
+      progressStatusLabel,
+      progressStatusClass,
+      selectedSuggestionIndexes,
+      batchApplying,
+      applySelectedSuggestions,
+      diffItems,
+      diffLoading,
+      loadLatestDiff,
+      exportReport,
+      downloadPdfAnnotations
     };
   }
 };
@@ -1649,6 +1828,118 @@ export default {
 /* Input */
 .el-input__wrapper {
   @apply rounded-md border border-border-color shadow-sm transition-colors duration-200 ease-in-out focus-within:border-primary focus-within:ring-1 focus-within:ring-primary;
+}
+
+.diff-insert {
+  background: #dcfce7;
+  color: #166534;
+  text-decoration: none;
+}
+
+.diff-delete {
+  background: #fee2e2;
+  color: #991b1b;
+  text-decoration: line-through;
+}
+
+.analysis-progress {
+  position: relative;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 12px;
+}
+
+.analysis-progress__item {
+  position: relative;
+  display: flex;
+  gap: 10px;
+  padding-bottom: 12px;
+}
+
+.analysis-progress__item:last-child {
+  padding-bottom: 0;
+}
+
+.analysis-progress__item::after {
+  content: '';
+  position: absolute;
+  left: 9px;
+  top: 22px;
+  bottom: 0;
+  width: 2px;
+  background: #d1d5db;
+}
+
+.analysis-progress__item:last-child::after {
+  display: none;
+}
+
+.analysis-progress__marker {
+  position: relative;
+  z-index: 1;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  border-radius: 999px;
+  border: 2px solid #94a3b8;
+  background: #fff;
+  color: #fff;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.analysis-progress__item--running .analysis-progress__marker {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+}
+
+.analysis-progress__item--completed .analysis-progress__marker {
+  background: #16a34a;
+  border-color: #16a34a;
+}
+
+.analysis-progress__item--failed .analysis-progress__marker {
+  background: #dc2626;
+  border-color: #dc2626;
+}
+
+.analysis-progress__content {
+  min-width: 0;
+  flex: 1;
+}
+
+.analysis-progress__title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.analysis-progress__status {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: #2563eb;
+}
+
+.analysis-progress__item--completed .analysis-progress__status {
+  color: #16a34a;
+}
+
+.analysis-progress__item--failed .analysis-progress__status {
+  color: #dc2626;
+}
+
+.analysis-progress__message {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #64748b;
 }
 </style>
 

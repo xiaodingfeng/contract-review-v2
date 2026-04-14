@@ -45,6 +45,29 @@ export default {
         return apiClient.post(`/contracts/${contractId}/replace-text`, payload);
     },
 
+    batchReplaceContractText(contractId, payload) {
+        return apiClient.post(`/contracts/${contractId}/batch-replace-text`, payload);
+    },
+
+    getContractVersions(contractId) {
+        return apiClient.get(`/contracts/${contractId}/versions`);
+    },
+
+    getContractDiff(contractId, params = {}) {
+        return apiClient.get(`/contracts/${contractId}/diff`, { params });
+    },
+
+    exportReviewReport(contractId, format = 'html') {
+        return apiClient.get(`/contracts/${contractId}/export-report`, {
+            params: { format },
+            responseType: 'blob'
+        });
+    },
+
+    downloadPdfAnnotations(contractId) {
+        return apiClient.get(`/contracts/${contractId}/pdf-annotations`, { responseType: 'blob' });
+    },
+
     getFreshEditorConfig(contractId) {
         return apiClient.get(`/contracts/${contractId}/editor-config`);
     },
