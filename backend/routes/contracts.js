@@ -722,18 +722,72 @@ router.post('/groups', async (req, res) => {
     const userId = requireRequestUserId(req, res);
     if (!userId) return;
     const name = String(req.body?.name || `关联合同组 ${new Date().toISOString()}`).trim();
-    const [group] = await db('contract_groups').insert({ user_id: userId, name }).returning(['id', 'name', 'created_at']);
+    const [group] = await db('contract_groups').insert({ user_id: userId, name, status: 'Uploaded' }).returning(['id', 'name', 'created_at', 'status']);
     res.status(201).json(group);
+});
+
+router.get('/groups/:groupId', async (req, res) => {
+    const userId = requireRequestUserId(req, res);
+    if (!userId) return;
+
+    try {
+        const group = await db('contract_groups')
+            .where({ id: req.params.groupId, user_id: userId })
+            .first();
+        if (!group) return res.status(404).json({ error: '未找到该关联合同分析记录。' });
+
+        const contracts = await db('contracts')
+            .where({ user_id: userId, group_id: req.params.groupId })
+            .select('id', 'original_filename', 'created_at', 'status')
+            .orderBy('created_at', 'asc');
+
+        res.json({
+            id: group.id,
+            name: group.name,
+            status: group.status,
+            created_at: group.created_at,
+            updated_at: group.updated_at,
+            result: parseJsonField(group.analysis_result, {}),
+            contracts,
+        });
+    } catch (error) {
+        console.error(`[ERROR] Failed to fetch contract group ${req.params.groupId}:`, error);
+        res.status(500).json({ error: '获取关联合同分析记录失败。' });
+    }
+});
+
+router.delete('/groups/:groupId', async (req, res) => {
+    const userId = requireRequestUserId(req, res);
+    if (!userId) return;
+
+    try {
+        const contracts = await db('contracts')
+            .where({ user_id: userId, group_id: req.params.groupId })
+            .select('id', 'storage_path');
+        await Promise.all(contracts.map((contract) => (
+            contract.storage_path ? fs.promises.unlink(contract.storage_path).catch(() => {}) : Promise.resolve()
+        )));
+        await db('contracts').where({ user_id: userId, group_id: req.params.groupId }).del();
+        const deleted = await db('contract_groups').where({ id: req.params.groupId, user_id: userId }).del();
+        if (!deleted) return res.status(404).json({ error: '未找到该关联合同分析记录。' });
+        res.json({ message: '关联合同分析记录已删除。' });
+    } catch (error) {
+        console.error(`[ERROR] Failed to delete contract group ${req.params.groupId}:`, error);
+        res.status(500).json({ error: '删除关联合同分析记录失败。' });
+    }
 });
 
 router.post('/groups/:groupId/analyze', async (req, res) => {
     const userId = requireRequestUserId(req, res);
     if (!userId) return;
+    const group = await db('contract_groups').where({ id: req.params.groupId, user_id: userId }).first();
+    if (!group) return res.status(404).json({ error: '未找到该关联合同组。' });
+
     const contracts = await db('contracts')
         .where({ user_id: userId, group_id: req.params.groupId })
         .select('id', 'original_filename', 'storage_path');
     if (contracts.length < 2) {
-        return res.status(400).json({ error: 'At least two contracts are required for linked analysis.' });
+        return res.status(400).json({ error: '多合同关联分析至少需要 2 份合同。' });
     }
 
     try {
@@ -747,10 +801,15 @@ router.post('/groups/:groupId/analyze', async (req, res) => {
 关联合同内容：
 ${documents.map((doc, index) => `[DOCUMENT_${index + 1}: ${doc.filename}]\n${wrapContractContent(doc.text)}`).join('\n\n')}`;
         const result = await callJsonLLM(prompt);
+        await db('contract_groups').where({ id: req.params.groupId, user_id: userId }).update({
+            analysis_result: JSON.stringify(result),
+            status: 'Reviewed',
+            updated_at: db.fn.now(),
+        });
         res.json({ contracts: contracts.map(({ id, original_filename }) => ({ id, original_filename })), result });
     } catch (error) {
         console.error('[ERROR] Linked contract analysis failed:', error);
-        res.status(500).json({ error: 'Linked contract analysis failed.' });
+        res.status(500).json({ error: '多合同关联分析失败，请稍后重试。' });
     }
 });
 
@@ -1266,9 +1325,25 @@ router.get('/', async (req, res) => {
     try {
         const contracts = await db('contracts')
             .where({ user_id: userId })
+            .whereNull('group_id')
             .select('id', 'original_filename', 'created_at', 'status')
             .orderBy('created_at', 'desc');
-        res.json(contracts);
+        const groups = await db('contract_groups')
+            .where({ user_id: userId })
+            .select('id', 'name', 'created_at', 'updated_at', 'status')
+            .orderBy('created_at', 'desc');
+        const records = [
+            ...contracts.map((contract) => ({ ...contract, record_type: 'contract' })),
+            ...groups.map((group) => ({
+                id: group.id,
+                original_filename: group.name,
+                created_at: group.created_at,
+                updated_at: group.updated_at,
+                status: group.status || 'Reviewed',
+                record_type: 'group',
+            })),
+        ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        res.json(records);
     } catch (error) {
         console.error(`[ERROR] Failed to fetch contract history for user ${userId}:`, error);
         res.status(500).json({ error: 'Failed to fetch contract history.' });

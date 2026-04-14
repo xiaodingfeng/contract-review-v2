@@ -68,6 +68,22 @@ export default {
         return apiClient.get(`/contracts/${contractId}/pdf-annotations`, { responseType: 'blob' });
     },
 
+    createContractGroup(payload) {
+        return apiClient.post('/contracts/groups', payload);
+    },
+
+    analyzeContractGroup(groupId) {
+        return apiClient.post(`/contracts/groups/${groupId}/analyze`);
+    },
+
+    getContractGroup(groupId) {
+        return apiClient.get(`/contracts/groups/${groupId}`);
+    },
+
+    deleteContractGroup(groupId) {
+        return apiClient.delete(`/contracts/groups/${groupId}`);
+    },
+
     getFreshEditorConfig(contractId) {
         return apiClient.get(`/contracts/${contractId}/editor-config`);
     },

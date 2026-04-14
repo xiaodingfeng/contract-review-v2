@@ -75,9 +75,13 @@ async function resetAndRebuildDatabase() {
         table.increments('id').primary();
         table.integer('user_id').unsigned().references('id').inTable('users').onDelete('CASCADE');
         table.string('name').notNullable();
+        table.text('analysis_result');
+        table.string('status');
         table.timestamps(true, true);
       });
     }
+    await ensureColumn('contract_groups', 'analysis_result', (table) => table.text('analysis_result'));
+    await ensureColumn('contract_groups', 'status', (table) => table.string('status'));
 
     const hasQaHistoryTable = await db.schema.hasTable('qa_history');
     if (!hasQaHistoryTable) {
